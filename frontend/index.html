@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Queue — Control Room</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="scanline"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">▣</span>
+    <div>
+      <div class="brand-title">JOB QUEUE</div>
+      <div class="brand-sub">control room</div>
+    </div>
+  </div>
+  <div class="conn-status" id="connStatus">
+    <span class="dot"></span> <span id="connLabel">connecting…</span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- Stats strip -->
+  <section class="stats-strip" id="statsStrip">
+    <div class="stat-card" data-key="queue_depth">
+      <div class="stat-label">Queued</div>
+      <div class="stat-value" id="stat-queue_depth">–</div>
+    </div>
+    <div class="stat-card" data-key="running">
+      <div class="stat-label">Running</div>
+      <div class="stat-value" id="stat-running">–</div>
+    </div>
+    <div class="stat-card" data-key="delayed_depth">
+      <div class="stat-label">Retry-scheduled</div>
+      <div class="stat-value" id="stat-delayed_depth">–</div>
+    </div>
+    <div class="stat-card" data-key="success">
+      <div class="stat-label">Succeeded</div>
+      <div class="stat-value stat-good" id="stat-success">–</div>
+    </div>
+    <div class="stat-card" data-key="dead_letter_depth">
+      <div class="stat-label">Dead-letter</div>
+      <div class="stat-value stat-bad" id="stat-dead_letter_depth">–</div>
+    </div>
+  </section>
+
+  <div class="columns">
+
+    <!-- Submit form -->
+    <section class="panel submit-panel">
+      <h2 class="panel-title">Submit a job</h2>
+      <form id="jobForm">
+        <label>
+          Type
+          <select id="jobType">
+            <option value="echo">echo — trivial test job</option>
+            <option value="send_email">send_email — mock email send</option>
+            <option value="ai_summarize">ai_summarize — calls Claude</option>
+            <option value="flaky">flaky — fails ~60% of the time (demo retries)</option>
+          </select>
+        </label>
+
+        <label id="payloadEchoWrap">
+          Message
+          <input type="text" id="payloadEcho" placeholder="hello queue" value="hello queue">
+        </label>
+
+        <label id="payloadEmailWrap" class="hidden">
+          To
+          <input type="text" id="payloadEmailTo" placeholder="someone@example.com">
+        </label>
+        <label id="payloadEmailSubjectWrap" class="hidden">
+          Subject
+          <input type="text" id="payloadEmailSubject" placeholder="Welcome!">
+        </label>
+
+        <label id="payloadAiWrap" class="hidden">
+          Text to summarize
+          <textarea id="payloadAiText" rows="3" placeholder="Paste text here…"></textarea>
+        </label>
+
+        <div class="row">
+          <label class="half">
+            Priority
+            <select id="jobPriority">
+              <option value="1">1 — highest</option>
+              <option value="3">3</option>
+              <option value="5" selected>5 — normal</option>
+              <option value="8">8</option>
+              <option value="10">10 — lowest</option>
+            </select>
+          </label>
+          <label class="half">
+            Max retries
+            <input type="number" id="jobMaxRetries" min="0" max="10" value="3">
+          </label>
+        </div>
+
+        <button type="submit" class="btn-submit">Enqueue job →</button>
+        <div class="form-msg" id="formMsg"></div>
+      </form>
+    </section>
+
+    <!-- Job table -->
+    <section class="panel table-panel">
+      <div class="panel-header-row">
+        <h2 class="panel-title">Jobs</h2>
+        <div class="filter-group">
+          <select id="statusFilter">
+            <option value="">all statuses</option>
+            <option value="pending">pending</option>
+            <option value="running">running</option>
+            <option value="success">success</option>
+            <option value="failed">failed (retrying)</option>
+            <option value="dead_letter">dead_letter</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Pri</th>
+              <th>Retries</th>
+              <th>Worker</th>
+              <th>Updated</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="jobsTableBody">
+            <tr><td colspan="8" class="empty-row">No jobs yet — submit one on the left.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- Job detail modal -->
+<div class="modal-backdrop hidden" id="modalBackdrop">
+  <div class="modal">
+    <button class="modal-close" id="modalClose">×</button>
+    <h3>Job detail</h3>
+    <pre id="modalContent"></pre>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
