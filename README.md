@@ -1,191 +1,20 @@
 # Job Queue System
 
-A distributed background job processing system, built from scratch: priority
-scheduling, automatic retries with exponential backoff, dead-letter handling,
-and crash recovery for workers that die mid-job. Includes a live dashboard.
+Submits background tasks (like sending emails) to a queue, so they run
+without making the user wait. Includes retries if a task fails, and a
+live dashboard to watch it work.
 
-This is a simplified version of what Celery, Sidekiq, or AWS SQS + Lambda do
-under the hood — built to understand (and be able to explain) the mechanics,
-not to replace them.
+Built with: Python (FastAPI), PostgreSQL, Redis, Docker
 
-## Architecture
+## How to run it
 
-```
-                    ┌─────────────┐
-                    │  Dashboard  │  (static HTML/JS, polls the API)
-                    └──────┬──────┘
-                           │ HTTP
-                           ▼
-┌─────────────┐     ┌─────────────┐      ┌──────────────┐
-│   Client /   │────▶│  FastAPI    │─────▶│  PostgreSQL  │
-│   curl / UI  │     │  API server │      │ (job records,│
-└─────────────┘     └──────┬──────┘      │  results,    │
-                           │              │  history)     │
-                           ▼              └──────────────┘
-                    ┌─────────────┐              ▲
-                    │    Redis    │              │
-                    │  (queue +   │              │
-                    │  scheduling)│              │
-                    └──────┬──────┘              │
-                           │                      │
-                 ┌─────────┴─────────┐            │
-                 ▼                   ▼            │
-          ┌─────────────┐     ┌─────────────┐     │
-          │  Worker #1  │     │  Worker #2  │─────┘
-          │ (polls,     │     │  (same code,│
-          │  executes)  │     │  runs in    │
-          └─────────────┘     │  parallel)  │
-                               └─────────────┘
-```
-
-**Why two data stores instead of one?** Postgres holds durable job records —
-the source of truth for status, results, and history, queryable by the API
-and dashboard. Redis holds the *queue itself* — sorted sets give O(log n)
-priority ordering and atomic blocking pops (`BZPOPMIN`), which Postgres isn't
-built for under concurrent polling. This mirrors the split most production
-queue systems make (e.g. Sidekiq: Redis for the queue, your app DB for
-business records).
-
-## How each mechanic works
-
-**Priority queue.** Redis sorted set, scored as `priority * 10^13 +
-created_at_ms`. Lower priority numbers (1 = highest) sort first; within the
-same priority, earlier jobs sort first — so it's priority order with FIFO as
-the tiebreaker, not FIFO-only or priority-only.
-
-**Retries with backoff.** On failure, the job goes into a second sorted set
-(`DELAYED_KEY`) scored by `ready_at = now + backoff`, where
-`backoff = base * 2^(retry_count - 1)`. A maintenance pass in each worker's
-loop moves due jobs back into the main queue. This avoids busy-waiting or a
-separate scheduler process.
-
-**Dead-letter queue.** Once `retry_count` exceeds `max_retries`, the job is
-marked `dead_letter` and pushed onto a list for manual inspection — it never
-silently disappears.
-
-**Crash recovery.** Workers write a heartbeat timestamp to a Redis hash while
-processing a job. If a worker crashes mid-job, its heartbeat goes stale.
-Other workers' maintenance passes detect this (`last_beat` older than
-`HEARTBEAT_TIMEOUT_SEC`) and requeue the job — so a dead worker doesn't lose
-in-flight work.
-
-**Concurrency safety.** `BZPOPMIN` is atomic at the Redis level, so multiple
-workers can block on the same queue key without a race where two workers
-grab the same job.
-
-## Project layout
-
-```
-backend/
-  app/            FastAPI application (API server)
-    main.py       routes
-    models.py     SQLAlchemy models
-    schemas.py    Pydantic request/response schemas
-    queue.py      Redis queue primitives
-    database.py   DB session setup
-    config.py     env-based settings
-  worker/         worker process (separate from the API, scales independently)
-    worker.py     main loop: pop, execute, retry/backoff/dead-letter, recovery
-    job_types.py  the actual job handlers -- add new job types here
-  requirements.txt
-  Dockerfile
-frontend/
-  index.html, style.css, app.js   dashboard (no build step, plain fetch calls)
-docker-compose.yml
-```
-
-## Running it
-
-**Requirements:** Docker + Docker Compose.
-
-```bash
-git clone <this repo>
-cd job-queue-system
 docker compose up --build
-```
 
-This starts Postgres, Redis, the API (port 8000), and one worker. To run
-multiple workers in parallel (to see concurrent processing):
+Then open frontend/index.html in your browser.
 
-```bash
-docker compose up --build --scale worker=3
-```
+## What it does
 
-Then open `frontend/index.html` directly in your browser (double-click it,
-or `python3 -m http.server` from the `frontend/` folder and visit
-`http://localhost:8000`... note: use a different port than the API, e.g.
-`python3 -m http.server 5500`).
-
-API docs (auto-generated by FastAPI): **http://localhost:8000/docs**
-
-### Optional: real AI summarization
-
-Without an API key, the `ai_summarize` job type returns a stub response so
-the whole pipeline still runs end-to-end. To use the real thing:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-docker compose up --build
-```
-
-### Running without Docker (local dev)
-
-```bash
-# Postgres and Redis need to be running locally first (e.g. via `brew services`)
-cd backend
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # edit DATABASE_URL / REDIS_URL if needed
-
-uvicorn app.main:app --reload          # terminal 1: API
-WORKER_ID=worker-1 python -m worker.worker   # terminal 2: worker
-```
-
-## API reference
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/jobs` | Submit a job: `{type, payload, priority, max_retries}` |
-| `GET` | `/jobs/{id}` | Get a single job's status/result |
-| `GET` | `/jobs?status=&type=&limit=&offset=` | List/filter jobs |
-| `DELETE` | `/jobs/{id}` | Cancel a job (only while still `pending`) |
-| `GET` | `/stats` | Status counts, queue depth, dead-letter depth |
-| `GET` | `/health` | Liveness check |
-
-Example:
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"type": "echo", "payload": {"msg": "hello"}, "priority": 3, "max_retries": 2}'
-```
-
-Built-in job types (see `backend/worker/job_types.py`): `echo`, `send_email`
-(mock), `ai_summarize`, `flaky` (fails ~60% of the time — good for watching
-retry/backoff/dead-letter behavior live in the dashboard).
-
-## Design tradeoffs (worth knowing for an interview)
-
-- **Redis vs. RabbitMQ/Kafka**: Redis sorted sets are simple and fast enough
-  for moderate throughput, but lack RabbitMQ's routing/exchange model or
-  Kafka's log-based replay and consumer groups. This project is intentionally
-  swappable — the queue logic is isolated in `app/queue.py`, so replacing the
-  backend without touching API or worker code is a natural extension.
-- **Polling-based maintenance** (retry promotion, crash detection) runs
-  inside each worker's loop rather than a dedicated scheduler process. Simple
-  and has no single point of failure, but means the check interval (~3s) is
-  the maintenance latency floor. A production system might separate this
-  into its own lightweight service.
-- **At-least-once delivery, not exactly-once.** If a worker crashes after
-  finishing a job but before it clears its Redis heartbeat, the job could be
-  retried and run twice. Handlers should be idempotent where that matters —
-  a real system would add idempotency keys per job.
-- **No auth on the API.** Fine for a local/demo project; a real deployment
-  would add API keys or JWT auth, and lock down CORS.
-
-## Possible extensions
-
-- Swap Redis for RabbitMQ and compare throughput/complexity.
-- Add per-job-type rate limiting (e.g. max N `send_email` jobs/sec).
-- Add a `/workers` endpoint with live heartbeat status per worker.
-- Persist dead-letter jobs with a "replay" button in the dashboard.
-- Add Prometheus metrics + a Grafana dashboard instead of the polling UI.
+- Submit a job (task) with a priority
+- Workers pick up jobs and run them
+- Failed jobs automatically retry a few times before giving up
+- Dashboard shows live status of every job
